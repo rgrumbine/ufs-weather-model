@@ -21,7 +21,6 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/CMakeModules/Modules)
 set(32BIT           OFF CACHE BOOL "Enable 32BIT (single precision arithmetic in dycore)")
 set(AVX2            ON  CACHE BOOL "Enable AVX2 instruction set")
 set(SIMDMULTIARCH   OFF CACHE BOOL "Enable multi-target SIMD instruction sets")
-set(CCPP            ON  CACHE BOOL "Enable CCPP")
 set(DEBUG           OFF CACHE BOOL "Enable DEBUG mode")
 set(DEBUG_LINKMPI   ON  CACHE BOOL "Enable linkmpi option when DEBUG mode is on")
 set(INLINE_POST     OFF CACHE BOOL "Enable inline post")
@@ -52,13 +51,23 @@ if(CMAKE_Platform)
   else()
     message("Platform '${CMAKE_Platform}' configuration file does not exist")
   endif()
+
+  # DH* 20210208 temporary workaround for FMS issues on Cheyenne with GNU 9.1.0
+  if (CMAKE_Platform MATCHES "cheyenne.gnu")
+    message("Applying patch cheyenne_gnu_fms_mpp_util_mpi_inc.patch")
+    execute_process(COMMAND patch -N -p0 INPUT_FILE cheyenne_gnu_fms_mpp_util_mpi_inc.patch
+                    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                    OUTPUT_FILE ${CMAKE_CURRENT_BINARY_DIR}/cheyenne_gnu_fms_mpp_util_mpi_inc.patch.out
+                    ERROR_FILE  ${CMAKE_CURRENT_BINARY_DIR}/cheyenne_gnu_fms_mpp_util_mpi_inc.patch.err
+                    RESULT_VARIABLE RC)
+    # *DH 20210208
+  endif()
 endif()
 
 message("")
 message("32BIT ............ ${32BIT}")
 message("AVX2 ............. ${AVX2}")
 message("SIMDMULTIARCH ...  ${SIMDMULTIARCH}")
-message("CCPP ............. ${CCPP}")
 message("DEBUG ............ ${DEBUG}")
 message("DEBUG_LINKMPI .... ${DEBUG_LINKMPI}")
 message("INLINE_POST ...... ${INLINE_POST}")
@@ -112,13 +121,9 @@ endif()
 # See https://github.com/NOAA-EMC/NCEPLIBS-nemsio/pull/22
 target_link_libraries(nemsio::nemsio INTERFACE w3emc::w3emc_d bacio::bacio_4)
 
-if(CCPP)
-  find_package(Python 3 QUIET COMPONENTS Interpreter)
-  if (NOT Python_Interpreter_FOUND)
-    find_package(Python 2.7 REQUIRED COMPONENTS Interpreter)
-  endif()
-  message("Found Python: ${Python_EXECUTABLE}")
-endif()
+# Configure Python
+find_package(Python 3 REQUIRED COMPONENTS Interpreter)
+message("Found Python: ${Python_EXECUTABLE}")
 
 ###############################################################################
 ### Checks
@@ -136,8 +141,6 @@ endif()
 ###############################################################################
 include(fms_files.cmake)
 add_library(fms ${fms_src_files} ${fms_headers})
-# stupid cmake can not figure out dependency of fft.F90 on fft99.F90 because 'use fft99_mod' is inside ifdefs
-set_property(SOURCE FMS/fft/fft.F90 APPEND_STRING PROPERTY COMPILE_FLAGS "-DSGICRAY=0 -DNAGFFT=0")
 
 list(APPEND _fms_defs_public use_libMPI
                              use_netCDF
@@ -146,12 +149,21 @@ list(APPEND _fms_defs_public use_libMPI
 if(QUAD_PRECISION)
   list(APPEND _fms_defs_public ENABLE_QUAD_PRECISION)
 endif()
+
+# check gettid
+include(CheckFunctionExists)
+check_function_exists(gettid HAVE_GETTID)
+if(HAVE_GETTID)
+  list(APPEND _fms_defs_public HAVE_GETTID)
+endif()
+
 target_compile_definitions(fms PUBLIC "${_fms_defs_public}")
 
 if(32BIT)
   list(APPEND _fms_defs_private OVERLOAD_R4
                                 OVERLOAD_R8)
 endif()
+
 target_compile_definitions(fms PRIVATE "${_fms_defs_private}")
 
 target_include_directories(fms PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/FMS/include>
@@ -243,8 +255,7 @@ list(APPEND _nems_srcs NEMS/src/module_NEMS_UTILS.F90
                        NEMS/src/module_NEMS_INTERNAL_STATE.F90
                        NEMS/src/module_NEMS_GRID_COMP.F90
                        NEMS/src/module_NEMS_Rusage.F90
-                       NEMS/src/nems_c_rusage.c
-                       NEMS/src/ENS_Cpl/ENS_CplComp_ESMFMod_STUB.F90)
+                       NEMS/src/nems_c_rusage.c)
 
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/NEMS/src/ESMFVersionDefine_ESMF_NUOPC.h
                ${CMAKE_CURRENT_BINARY_DIR}/NEMS/src/ESMFVersionDefine.h
